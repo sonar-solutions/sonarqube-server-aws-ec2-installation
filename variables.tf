@@ -8,13 +8,18 @@ variable "instance_type" {
   description = "EC2 instance type for the SonarQube host."
 }
 
+variable "installation_os" {
+  type        = string
+  description = "Operating system selector (e.g., windows, linux)."
+  validation {
+    condition     = contains(["windows", "linux"], var.installation_os)
+    error_message = "installation_os must be one of: windows, linux."
+  }
+}
 variable "operating_system" {
   type        = string
-  description = "Operating system selector (e.g., amazon-linux-2, windows-2019)."
-  validation {
-    condition     = contains(["amazon-linux-2", "windows-2019"], var.operating_system)
-    error_message = "operating_system must be one of: amazon-linux-2, windows-2019."
-  }
+  description = "Exact operating system to use for the instance."
+  default     = "windows-2019"
 }
 
 variable "vpc_id" {
@@ -96,14 +101,52 @@ variable "rdp_allowed_cidr" {
   default     = "0.0.0.0/0"
 }
 
-variable "download_url" {
+# options for installation
+variable "install_chromium" {
+  type        = bool
+  description = "Whether to install Chromium."
+  default     = true
+}
+
+variable "enable_rdp" {
+  type        = bool
+  description = "Whether to enable RDP access to the EC2 instance."
+  default     = true
+}
+
+# Variables for SonarQube installation with user_data 
+variable "zip_download_url" {
   type        = string
   description = "URL to download the SonarQube installer from."
   default     = "https://binaries.sonarsource.com/CommercialDistribution/sonarqube-enterprise/sonarqube-enterprise-2025.5.0.113872.zip"
 }
 
-variable "sonar_dir" {
+variable "zip_filename" {
+  type        = string
+  description = "Name of the SonarQube installer file."
+  default     = "SonarQube.zip"
+}
+
+variable "win_sonar_dir" {
   type        = string
   description = "Path where SonarQube will be downloaded and unzipped."
-  default     = "c:\\sonarqube"
+  default     = "c:\\SonarQube"
+}
+
+variable "win_java_url" {
+  type        = string
+  description = "URL to download the Java installer from."
+  default     = "https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.9%2B10/OpenJDK21U-jdk_x64_windows_hotspot_21.0.9_10.msi"
+}
+
+variable "win_java_filename" {
+  type        = string
+  description = "Name of the Java installer file."
+  default     = "Java.msi"
+}
+
+variable "linux_sonar_dir" {
+  type        = string
+  description = "Path where SonarQube will be downloaded and unzipped."
+  default     = "/opt/sonarqube"
 }

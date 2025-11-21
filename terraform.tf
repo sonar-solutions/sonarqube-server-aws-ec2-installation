@@ -34,6 +34,7 @@ locals {
   domain_fqdn        = format("%s.%s", var.hostname, trim(var.domain_name, "."))
   rds_identifier     = substr(replace(lower(var.rds_name), "/[^a-z0-9-]/", "-"), 0, 63)
   rds_database_name  = substr(replace(lower(var.rds_name), "/[^a-z0-9]/", ""), 0, 63)
+  jdbc_url           = "jdbc:postgresql://${aws_db_instance.postgres.address}:5432/${local.rds_database_name}"
 
   ami_lookup = {
     "amazon-linux-2" = {
@@ -51,6 +52,8 @@ locals {
       }
     }
   }
+
+  is_windows = data.aws_ami.selected.platform == "windows"
 }
 
 
@@ -225,19 +228,22 @@ resource "aws_security_group" "ec2" {
   vpc_id      = local.vpc_id_effective
 
   ingress {
-    description = "TLS from NLB"
-    from_port   = 443
-    to_port     = 443
+    description = "SonarQube from NLB"
+    from_port   = 9000
+    to_port     = 9000
     protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
   }
 
-  ingress {
-    description = "RDP access"
-    from_port   = 3389
-    to_port     = 3389
-    protocol    = "tcp"
-    cidr_blocks = [var.rdp_allowed_cidr]
+  dynamic "ingress" {
+    for_each = local.is_windows && var.enable_rdp ? [1] : []
+    content {
+      description = "RDP access"
+      from_port   = 3389
+      to_port     = 3389
+      protocol    = "tcp"
+      cidr_blocks = [var.rdp_allowed_cidr]
+    }
   }
 
   egress {
@@ -292,8 +298,9 @@ resource "aws_db_subnet_group" "this" {
 }
 
 resource "random_password" "db_admin" {
-  length  = 32
-  special = true
+  length         = 32
+  special        = true
+  override_special = "!@#$%^&*()_+-=[]{}|;:,.<>?"
 }
 
 resource "tls_private_key" "ec2_key" {
@@ -325,6 +332,20 @@ resource "aws_instance" "app" {
   key_name                    = aws_key_pair.ec2.key_name
   associate_public_ip_address = false
 
+  user_data = local.is_windows ? templatefile("${path.module}/user_data.ps1", {
+    url = var.zip_download_url
+    path = var.win_sonar_dir
+    java_url = var.win_java_url
+    java_filename = var.win_java_filename
+    zip_filename = var.zip_filename
+    install_chromium = var.install_chromium
+    jdbc_url = local.jdbc_url
+    db_password = random_password.db_admin.result
+    db_username = "sonarqube"
+  }) : file("${path.module}/user_data.sh")
+
+  depends_on = [aws_db_instance.postgres]
+
   tags = {
     Name        = var.hostname
     Role        = "sonarqube-app"
@@ -345,7 +366,7 @@ resource "aws_db_instance" "postgres" {
   multi_az                = length(local.private_subnet_ids) > 1
   db_subnet_group_name    = aws_db_subnet_group.this.name
   vpc_security_group_ids  = [aws_security_group.db.id]
-  username                = "sqadmin"
+  username                = "sonarqube"
   password                = random_password.db_admin.result
   publicly_accessible     = false
   backup_retention_period = 7
@@ -374,13 +395,13 @@ resource "aws_lb" "nlb" {
 
 resource "aws_lb_target_group" "app" {
   name        = local.target_group_name
-  port        = 443
+  port        = 9000
   protocol    = "TCP"
   target_type = "instance"
   vpc_id      = local.vpc_id_effective
 
   health_check {
-    port                = "443"
+    port                = "9000"
     protocol            = "TCP"
     healthy_threshold   = 3
     unhealthy_threshold = 3
@@ -396,10 +417,12 @@ resource "aws_lb_target_group" "app" {
 resource "aws_lb_target_group_attachment" "app_ec2" {
   target_group_arn = aws_lb_target_group.app.arn
   target_id        = aws_instance.app.id
-  port             = 443
+  port             = 9000
 }
 
 resource "aws_lb_target_group" "rdp" {
+  count = local.is_windows && var.enable_rdp ? 1 : 0
+
   name        = local.rdp_target_group_name
   port        = 3389
   protocol    = "TCP"
@@ -421,19 +444,23 @@ resource "aws_lb_target_group" "rdp" {
 }
 
 resource "aws_lb_target_group_attachment" "rdp_ec2" {
-  target_group_arn = aws_lb_target_group.rdp.arn
+  count = local.is_windows && var.enable_rdp ? 1 : 0
+
+  target_group_arn = aws_lb_target_group.rdp[0].arn
   target_id        = aws_instance.app.id
   port             = 3389
 }
 
 resource "aws_lb_listener" "rdp" {
+  count = local.is_windows && var.enable_rdp ? 1 : 0
+
   load_balancer_arn = aws_lb.nlb.arn
   port              = 3389
   protocol          = "TCP"
 
   default_action {
     type             = "forward"
-    target_group_arn = aws_lb_target_group.rdp.arn
+    target_group_arn = aws_lb_target_group.rdp[0].arn
   }
 }
 
