@@ -16,11 +16,6 @@ variable "installation_os" {
     error_message = "installation_os must be one of: windows, linux."
   }
 }
-variable "operating_system" {
-  type        = string
-  description = "Exact operating system to use for the instance."
-  default     = "windows-2019"
-}
 
 variable "vpc_id" {
   type        = string
@@ -89,6 +84,12 @@ variable "rds_engine_version" {
   default     = "15.4"
 }
 
+variable "db_username" {
+  type        = string
+  description = "Username for the PostgreSQL database."
+  default     = "sonarqube"
+}
+
 variable "owner" {
   type        = string
   description = "Owner tag value for all resources."
@@ -118,7 +119,7 @@ variable "enable_rdp" {
 variable "zip_download_url" {
   type        = string
   description = "URL to download the SonarQube installer from."
-  default     = "https://binaries.sonarsource.com/CommercialDistribution/sonarqube-enterprise/sonarqube-enterprise-2025.5.0.113872.zip"
+  default     = "https://binaries.sonarsource.com/CommercialDistribution/sonarqube-enterprise/sonarqube-enterprise-2026.1.0.119033.zip"
 }
 
 variable "zip_filename" {
@@ -133,6 +134,12 @@ variable "win_sonar_dir" {
   default     = "c:\\SonarQube"
 }
 
+variable "linux_sonar_dir" {
+  type        = string
+  description = "Path where SonarQube will be downloaded and unzipped."
+  default     = "/opt/"
+}
+
 variable "win_java_url" {
   type        = string
   description = "URL to download the Java installer from."
@@ -143,10 +150,4 @@ variable "win_java_filename" {
   type        = string
   description = "Name of the Java installer file."
   default     = "Java.msi"
-}
-
-variable "linux_sonar_dir" {
-  type        = string
-  description = "Path where SonarQube will be downloaded and unzipped."
-  default     = "/opt/sonarqube"
 }

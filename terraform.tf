@@ -37,32 +37,40 @@ locals {
   jdbc_url           = "jdbc:postgresql://${aws_db_instance.postgres.address}:5432/${local.rds_database_name}"
 
   ami_lookup = {
-    "amazon-linux-2" = {
+    "amazon-linux-2023" = {
       owners  = ["amazon"]
       filters = {
-        name                  = ["amzn2-ami-hvm-*-x86_64-gp2"]
+        name                  = ["al2023-ami-*-x86_64"]
         "virtualization-type" = ["hvm"]
       }
     }
-    "windows-2019" = {
+    "windows-2025" = {
       owners  = ["801119661308"]
       filters = {
-        name                  = ["Windows_Server-2019-English-Full-Base-*"]
+        name                  = ["Windows_Server-2025-English-Full-Base-*"]
         "virtualization-type" = ["hvm"]
       }
     }
   }
 
-  is_windows = data.aws_ami.selected.platform == "windows"
+  # Map installation_os to AMI lookup key
+  os_to_ami_key = {
+    "linux"   = "amazon-linux-2023"
+    "windows" = "windows-2025"
+  }
+
+  selected_ami_key = local.os_to_ami_key[var.installation_os]
+
+  is_windows = var.installation_os == "windows"
 }
 
 
 data "aws_ami" "selected" {
   most_recent = true
-  owners      = local.ami_lookup[var.operating_system].owners
+  owners      = local.ami_lookup[local.selected_ami_key].owners
 
   dynamic "filter" {
-    for_each = local.ami_lookup[var.operating_system].filters
+    for_each = local.ami_lookup[local.selected_ami_key].filters
     content {
       name   = filter.key
       values = filter.value
@@ -341,8 +349,15 @@ resource "aws_instance" "app" {
     install_chromium = var.install_chromium
     jdbc_url = local.jdbc_url
     db_password = random_password.db_admin.result
-    db_username = "sonarqube"
-  }) : file("${path.module}/user_data.sh")
+    db_username = var.db_username
+  }) : templatefile("${path.module}/user_data.sh", {
+    url = var.zip_download_url
+    path = var.linux_sonar_dir
+    zip_filename = var.zip_filename
+    jdbc_url = local.jdbc_url
+    db_password = random_password.db_admin.result
+    db_username = var.db_username
+  })
 
   depends_on = [aws_db_instance.postgres]
 
@@ -350,7 +365,7 @@ resource "aws_instance" "app" {
     Name        = var.hostname
     Role        = "sonarqube-app"
     Domain      = local.domain_fqdn
-    OperatingOS = var.operating_system
+    OperatingOS = var.installation_os
     Owner       = var.owner
   }
 }
