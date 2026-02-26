@@ -30,3 +30,6 @@ terraform.rc
 # Ignore private key files
 *.pem
 
+# terraform lock file
+.terraform.lock.hcl
+
