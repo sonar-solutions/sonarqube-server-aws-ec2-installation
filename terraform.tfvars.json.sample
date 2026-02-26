@@ -1,0 +1,33 @@
+{
+    "aws_region": "eu-central-1",
+    "instance_type": "m6a.xlarge",
+    "installation_os": "windows",
+    "vpc_id": null,
+    "vpc_name": "sonarqube-vpc",
+    "vpn_cidr": "10.0.0.0/16",
+    "private_subnets": [
+      "10.0.1.0/24",
+      "10.0.2.0/24"
+    ],
+    "public_subnets": [
+      "10.0.10.0/24",
+      "10.0.20.0/24"
+    ],
+    "availability_zones": [
+      "eu-central-1a",
+      "eu-central-1b"
+    ],
+    "hostname": "sq0",
+    "domain_name": "example.com",
+    "rds_name": "sonarqube-db",
+    "rds_instance_type": "db.t3.medium",
+    "rds_engine_version": "17.7",
+    "db_username": "sonarqube",
+    "owner": "Name Surname",
+    "zip_download_url": "https://binaries.sonarsource.com/CommercialDistribution/sonarqube-enterprise/sonarqube-enterprise-2026.1.0.119033.zip",
+    "win_sonar_dir": "c:\\SonarQube",
+    "win_java_url": "https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.9%2B10/OpenJDK21U-jdk_x64_windows_hotspot_21.0.9_10.msi",
+    "win_java_filename": "Java.msi",
+    "zip_filename": "SonarQube.zip",
+    "linux_sonar_dir": "/opt/"
+  }
