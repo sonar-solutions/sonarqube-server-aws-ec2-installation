@@ -93,7 +93,6 @@ variable "db_username" {
 variable "owner" {
   type        = string
   description = "Owner tag value for all resources."
-  default     = "Daniel Borek"
 }
 
 variable "rdp_allowed_cidr" {

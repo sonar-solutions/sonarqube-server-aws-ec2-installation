@@ -308,7 +308,7 @@ resource "aws_db_subnet_group" "this" {
 resource "random_password" "db_admin" {
   length         = 32
   special        = true
-  override_special = "!@#$%^&*()_+-=[]{}|;:,.<>?"
+  override_special = "!#$%^&*()_+-=[]{}|;:,.<>?"
 }
 
 resource "tls_private_key" "ec2_key" {
@@ -332,41 +332,85 @@ resource "local_file" "private_key" {
   file_permission = "0600"
 }
 
-resource "aws_instance" "app" {
-  ami                         = data.aws_ami.selected.id
-  instance_type               = var.instance_type
-  subnet_id                   = local.primary_subnet_id
-  vpc_security_group_ids      = [aws_security_group.ec2.id]
-  key_name                    = aws_key_pair.ec2.key_name
-  associate_public_ip_address = false
+resource "aws_launch_template" "app" {
+  name_prefix            = "${local.sanitized_hostname}-"
+  image_id               = data.aws_ami.selected.id
+  instance_type          = var.instance_type
+  key_name               = aws_key_pair.ec2.key_name
+  vpc_security_group_ids = [aws_security_group.ec2.id]
 
-  user_data = local.is_windows ? templatefile("${path.module}/user_data.ps1", {
-    url = var.zip_download_url
-    path = var.win_sonar_dir
-    java_url = var.win_java_url
-    java_filename = var.win_java_filename
-    zip_filename = var.zip_filename
+  user_data = base64encode(local.is_windows ? templatefile("${path.module}/user_data.ps1", {
+    url              = var.zip_download_url
+    path             = var.win_sonar_dir
+    java_url         = var.win_java_url
+    java_filename    = var.win_java_filename
+    zip_filename     = var.zip_filename
     install_chromium = var.install_chromium
-    jdbc_url = local.jdbc_url
-    db_password = random_password.db_admin.result
-    db_username = var.db_username
+    jdbc_url         = local.jdbc_url
+    db_password      = random_password.db_admin.result
+    db_username      = var.db_username
   }) : templatefile("${path.module}/user_data.sh", {
-    url = var.zip_download_url
-    path = var.linux_sonar_dir
+    url          = var.zip_download_url
+    path         = var.linux_sonar_dir
     zip_filename = var.zip_filename
-    jdbc_url = local.jdbc_url
-    db_password = random_password.db_admin.result
-    db_username = var.db_username
-  })
+    jdbc_url     = local.jdbc_url
+    db_password  = random_password.db_admin.result
+    db_username  = var.db_username
+  }))
+
+  tag_specifications {
+    resource_type = "instance"
+    tags = {
+      Name        = var.hostname
+      Role        = "sonarqube-app"
+      Domain      = local.domain_fqdn
+      OperatingOS = var.installation_os
+      Owner       = var.owner
+    }
+  }
+
+  lifecycle {
+    create_before_destroy = true
+  }
+}
+
+resource "aws_autoscaling_group" "app" {
+  name                      = "${local.sanitized_hostname}-asg"
+  min_size                  = 1
+  max_size                  = 1
+  desired_capacity          = 1
+  vpc_zone_identifier       = local.private_subnet_ids
+  health_check_type         = "ELB"
+  health_check_grace_period = 600
+
+  target_group_arns = concat(
+    [aws_lb_target_group.app.arn],
+    local.is_windows && var.enable_rdp ? [aws_lb_target_group.rdp[0].arn] : []
+  )
+
+  launch_template {
+    id      = aws_launch_template.app.id
+    version = "$Latest"
+  }
+
+  instance_refresh {
+    strategy = "Rolling"
+    preferences {
+      min_healthy_percentage = 0
+    }
+  }
 
   depends_on = [aws_db_instance.postgres]
 
-  tags = {
-    Name        = var.hostname
-    Role        = "sonarqube-app"
-    Domain      = local.domain_fqdn
-    OperatingOS = var.installation_os
-    Owner       = var.owner
+  tag {
+    key                 = "Name"
+    value               = var.hostname
+    propagate_at_launch = true
+  }
+  tag {
+    key                 = "Owner"
+    value               = var.owner
+    propagate_at_launch = true
   }
 }
 
@@ -429,11 +473,6 @@ resource "aws_lb_target_group" "app" {
   }
 }
 
-resource "aws_lb_target_group_attachment" "app_ec2" {
-  target_group_arn = aws_lb_target_group.app.arn
-  target_id        = aws_instance.app.id
-  port             = 9000
-}
 
 resource "aws_lb_target_group" "rdp" {
   count = local.is_windows && var.enable_rdp ? 1 : 0
@@ -458,13 +497,6 @@ resource "aws_lb_target_group" "rdp" {
   }
 }
 
-resource "aws_lb_target_group_attachment" "rdp_ec2" {
-  count = local.is_windows && var.enable_rdp ? 1 : 0
-
-  target_group_arn = aws_lb_target_group.rdp[0].arn
-  target_id        = aws_instance.app.id
-  port             = 3389
-}
 
 resource "aws_lb_listener" "rdp" {
   count = local.is_windows && var.enable_rdp ? 1 : 0
@@ -548,14 +580,14 @@ resource "aws_route53_record" "app_alias" {
   }
 }
 
-output "ec2_instance_id" {
-  value       = aws_instance.app.id
-  description = "ID of the SonarQube EC2 instance."
+output "sonarqube_url" {
+  value       = "https://${local.domain_fqdn}"
+  description = "Public URL to access the SonarQube instance."
 }
 
-output "ec2_private_ip" {
-  value       = aws_instance.app.private_ip
-  description = "Private IP address of the SonarQube EC2 instance."
+output "asg_name" {
+  value       = aws_autoscaling_group.app.name
+  description = "Name of the Auto Scaling Group managing the SonarQube EC2 instance."
 }
 
 output "rds_endpoint" {
