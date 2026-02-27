@@ -101,17 +101,14 @@ variable "rdp_allowed_cidr" {
   default     = "0.0.0.0/0"
 }
 
-# options for installation
 variable "install_chromium" {
   type        = bool
   description = "Whether to install Chromium."
-  default     = true
 }
 
 variable "enable_rdp" {
   type        = bool
   description = "Whether to enable RDP access to the EC2 instance."
-  default     = true
 }
 
 # Variables for SonarQube installation with user_data 
