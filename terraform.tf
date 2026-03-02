@@ -308,7 +308,7 @@ resource "aws_db_subnet_group" "this" {
 resource "random_password" "db_admin" {
   length         = 32
   special        = true
-  override_special = "!#$%^&*()_+-=[]{}|;:,.<>?"
+  override_special = "!#%^&*()_+-=[]{}|;:,.<>?"
 }
 
 resource "tls_private_key" "ec2_key" {
