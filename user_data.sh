@@ -22,6 +22,8 @@ dbPassword="${db_password}"
 # Update and upgrade OS packages
 dnf update -y
 
+# Set temporary password for ec2-user (for console access debugging)
+# echo "ec2-user:<put_password_here>" | chpasswd 
 
 # Install prerequisite packages
 dnf install unzip wget net-tools java-25-amazon-corretto-devel postgresql17 -y
