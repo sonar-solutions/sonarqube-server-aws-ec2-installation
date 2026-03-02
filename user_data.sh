@@ -22,7 +22,7 @@ dbPassword="${db_password}"
 # Update and upgrade OS packages
 dnf update -y
 
-# Set temporary password for ec2-user (for console access debugging)
+# Set temporary password for ec2-user (for debugging using the EC2 serial console)
 # echo "ec2-user:<put_password_here>" | chpasswd 
 
 # Install prerequisite packages
