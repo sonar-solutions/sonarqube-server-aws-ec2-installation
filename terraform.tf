@@ -1,5 +1,5 @@
 terraform {
-  required_version = ">= 1.5.0"
+  required_version = ">= 1.9.0"
 
   required_providers {
     aws = {
@@ -40,7 +40,7 @@ locals {
     "amazon-linux-2023" = {
       owners  = ["amazon"]
       filters = {
-        name                  = ["al2023-ami-*-x86_64"]
+        name                  = ["al2023-ami-2023.*-kernel-*-x86_64"]
         "virtualization-type" = ["hvm"]
       }
     }
@@ -339,6 +339,19 @@ resource "aws_launch_template" "app" {
   key_name               = aws_key_pair.ec2.key_name
   vpc_security_group_ids = [aws_security_group.ec2.id]
 
+  dynamic "block_device_mappings" {
+    for_each = var.deploy_agentic_containers ? [1] : []
+    content {
+      device_name = data.aws_ami.selected.root_device_name
+      ebs {
+        volume_size           = var.agentic_root_volume_size
+        volume_type           = "gp3"
+        encrypted             = true
+        delete_on_termination = true
+      }
+    }
+  }
+
   user_data = base64encode(local.is_windows ? templatefile("${path.module}/user_data.ps1", {
     url              = var.zip_download_url
     path             = var.win_sonar_dir
@@ -356,6 +369,26 @@ resource "aws_launch_template" "app" {
     jdbc_url     = local.jdbc_url
     db_password  = random_password.db_admin.result
     db_username  = var.db_username
+    deploy_agentic_containers  = var.deploy_agentic_containers
+    agentic_generator_revision = var.agentic_generator_revision
+    mcp_image                  = var.mcp_image
+    aws_region                 = var.aws_region
+    agentic_profile = jsonencode({
+      edition        = "none"
+      db_mode        = "external"
+      db_host        = aws_db_instance.postgres.address
+      db_port        = "5432"
+      db_name        = local.rds_database_name
+      db_user        = var.db_username
+      db_password    = random_password.db_admin.result
+      storage        = "hostpath"
+      storage_path   = "${trimsuffix(var.linux_sonar_dir, "/")}/agentic-storage"
+      tls            = "off"
+      sandbox        = "runsc"
+      llm_domains    = join(",", var.agentic_llm_domains)
+      custom_ca_dir  = "./custom-ca"
+      project_name   = "sonarqube-agentic"
+    })
   }))
 
   tag_specifications {
@@ -381,7 +414,7 @@ resource "aws_autoscaling_group" "app" {
   desired_capacity          = 1
   vpc_zone_identifier       = local.private_subnet_ids
   health_check_type         = "ELB"
-  health_check_grace_period = 600
+  health_check_grace_period = var.deploy_agentic_containers ? 1800 : 600
 
   target_group_arns = concat(
     [aws_lb_target_group.app.arn],
@@ -390,7 +423,7 @@ resource "aws_autoscaling_group" "app" {
 
   launch_template {
     id      = aws_launch_template.app.id
-    version = "$Latest"
+    version = tostring(aws_launch_template.app.latest_version)
   }
 
   instance_refresh {
@@ -566,6 +599,23 @@ resource "aws_lb_listener" "tls" {
   }
 
   depends_on = [aws_acm_certificate_validation.nlb]
+}
+
+# Migrate state addresses from the removed ACM toggle's count-based resources.
+# This preserves existing certificates and the HTTPS listener without recreating them.
+moved {
+  from = aws_acm_certificate.nlb[0]
+  to   = aws_acm_certificate.nlb
+}
+
+moved {
+  from = aws_acm_certificate_validation.nlb[0]
+  to   = aws_acm_certificate_validation.nlb
+}
+
+moved {
+  from = aws_lb_listener.tls[0]
+  to   = aws_lb_listener.tls
 }
 
 resource "aws_route53_record" "app_alias" {
