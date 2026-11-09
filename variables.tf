@@ -23,6 +23,28 @@ variable "vpc_id" {
   default     = null
 }
 
+variable "ami_family" {
+  type        = string
+  description = "AMI family: auto, amazon-linux-2023, windows-2019, windows-2022, or windows-2025. auto follows installation_os."
+  default     = "auto"
+
+  validation {
+    condition = contains(var.installation_os == "windows" ? ["auto", "windows-2019", "windows-2022", "windows-2025"] : ["auto", "amazon-linux-2023"], var.ami_family)
+    error_message = "Select an AMI family matching installation_os: Windows Server 2019/2022/2025 or Amazon Linux 2023."
+  }
+}
+
+variable "ami_id" {
+  type        = string
+  description = "Optional Amazon-owned x86_64 AMI ID within ami_family; empty selects the latest matching image."
+  default     = ""
+
+  validation {
+    condition     = var.ami_id == "" || can(regex("^ami-([0-9a-f]{8}|[0-9a-f]{17})$", var.ami_id))
+    error_message = "ami_id must be empty or a valid AMI ID."
+  }
+}
+
 variable "vpc_name" {
   type        = string
   description = "Name tag for the VPC when one is created."
@@ -114,7 +136,7 @@ variable "enable_rdp" {
 # Variables for SonarQube installation with user_data 
 variable "zip_download_url" {
   type        = string
-  description = "URL to download the SonarQube installer from."
+  description = "SonarQube distribution ZIP URL. The release in this URL selects the server version to install."
   default     = "https://binaries.sonarsource.com/CommercialDistribution/sonarqube-enterprise/sonarqube-enterprise-2026.1.0.119033.zip"
 }
 
@@ -146,4 +168,72 @@ variable "win_java_filename" {
   type        = string
   description = "Name of the Java installer file."
   default     = "Java.msi"
+}
+
+variable "deploy_agentic_containers" {
+  type        = bool
+  description = "Deploy the 2026.5 agentic pack and hosted MCP; Windows uses a separate Linux host."
+  default     = false
+
+  validation {
+    condition = !var.deploy_agentic_containers || (
+      can(regex("(^|/)sonarqube-(enterprise|datacenter)-2026\\.5\\.[0-9]+\\.[0-9]+\\.zip([?#].*)?$", var.zip_download_url))
+    )
+    error_message = "Agentic containers require a 2026.5 distribution ZIP named sonarqube-<enterprise|datacenter>-2026.5.<patch>.<build>.zip. For other server versions, set deploy_agentic_containers=false."
+  }
+}
+
+variable "agentic_instance_type" {
+  type        = string
+  description = "x86_64 EC2 instance type for the separate Amazon Linux agent host in Windows agentic deployments."
+  default     = "m6a.2xlarge"
+}
+
+variable "agentic_generator_revision" {
+  type        = string
+  description = "Pinned 40-character commit of SonarSource/docker-sonarqube with 2026.5 agentic-compose-generator defaults."
+  default     = ""
+
+  validation {
+    condition     = !var.deploy_agentic_containers || can(regex("^[0-9a-f]{40}$", var.agentic_generator_revision))
+    error_message = "Set agentic_generator_revision to a full commit SHA before enabling container deployment."
+  }
+}
+
+variable "agentic_llm_domains" {
+  type        = list(string)
+  description = "Explicit LLM provider hostnames permitted by the agent runtime egress proxy."
+  default     = ["api.anthropic.com"]
+
+  validation {
+    condition = length(var.agentic_llm_domains) > 0 && alltrue([
+      for domain in var.agentic_llm_domains : can(regex("^[A-Za-z0-9][A-Za-z0-9.-]*$", domain))
+    ])
+    error_message = "Supply explicit LLM hostnames, without schemes, ports, or wildcards."
+  }
+}
+
+variable "mcp_image" {
+  type        = string
+  description = "Release-compatible hosted MCP image, pinned by version tag or sha256 digest."
+  default     = ""
+
+  validation {
+    condition = !var.deploy_agentic_containers || (
+      can(regex("^[A-Za-z0-9./_-]+:[0-9][A-Za-z0-9._-]*$", var.mcp_image)) ||
+      can(regex("^[A-Za-z0-9./:_-]+@sha256:[0-9a-f]{64}$", var.mcp_image))
+    )
+    error_message = "Set mcp_image to a version-pinned image or sha256 digest, not latest."
+  }
+}
+
+variable "agentic_root_volume_size" {
+  type        = number
+  description = "Root gp3 volume size in GiB when agentic containers are enabled, including sandbox writable layers."
+  default     = 150
+
+  validation {
+    condition     = var.agentic_root_volume_size >= 100 && floor(var.agentic_root_volume_size) == var.agentic_root_volume_size
+    error_message = "agentic_root_volume_size must be a whole number of at least 100 GiB."
+  }
 }

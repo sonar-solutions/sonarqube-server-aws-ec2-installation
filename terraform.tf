@@ -1,5 +1,5 @@
 terraform {
-  required_version = ">= 1.5.0"
+  required_version = ">= 1.9.0"
 
   required_providers {
     aws = {
@@ -40,7 +40,21 @@ locals {
     "amazon-linux-2023" = {
       owners  = ["amazon"]
       filters = {
-        name                  = ["al2023-ami-*-x86_64"]
+        name                  = ["al2023-ami-2023.*-kernel-*-x86_64"]
+        "virtualization-type" = ["hvm"]
+      }
+    }
+    "windows-2019" = {
+      owners = ["801119661308"]
+      filters = {
+        name                  = ["Windows_Server-2019-English-Full-Base-*"]
+        "virtualization-type" = ["hvm"]
+      }
+    }
+    "windows-2022" = {
+      owners = ["801119661308"]
+      filters = {
+        name                  = ["Windows_Server-2022-English-Full-Base-*"]
         "virtualization-type" = ["hvm"]
       }
     }
@@ -59,7 +73,7 @@ locals {
     "windows" = "windows-2025"
   }
 
-  selected_ami_key = local.os_to_ami_key[var.installation_os]
+  selected_ami_key = var.ami_family == "auto" ? local.os_to_ami_key[var.installation_os] : var.ami_family
 
   is_windows = var.installation_os == "windows"
 }
@@ -70,7 +84,7 @@ data "aws_ami" "selected" {
   owners      = local.ami_lookup[local.selected_ami_key].owners
 
   dynamic "filter" {
-    for_each = local.ami_lookup[local.selected_ami_key].filters
+    for_each = merge(local.ami_lookup[local.selected_ami_key].filters, { architecture = ["x86_64"] }, var.ami_id == "" ? {} : { "image-id" = [var.ami_id] })
     content {
       name   = filter.key
       values = filter.value
@@ -339,7 +353,31 @@ resource "aws_launch_template" "app" {
   key_name               = aws_key_pair.ec2.key_name
   vpc_security_group_ids = [aws_security_group.ec2.id]
 
-  user_data = base64encode(local.is_windows ? templatefile("${path.module}/user_data.ps1", {
+  dynamic "iam_instance_profile" {
+    for_each = local.hybrid_agentic ? [1] : []
+    content {
+      name = aws_iam_instance_profile.hybrid["app"].name
+    }
+  }
+
+  dynamic "block_device_mappings" {
+    for_each = var.deploy_agentic_containers ? [1] : []
+    content {
+      device_name = data.aws_ami.selected.root_device_name
+      ebs {
+        volume_size           = var.agentic_root_volume_size
+        volume_type           = "gp3"
+        encrypted             = true
+        delete_on_termination = true
+      }
+    }
+  }
+
+  user_data = base64encode(local.hybrid_agentic ? templatefile("${path.module}/templates/windows_bootstrap.ps1.tftpl", {
+    bucket        = aws_s3_bucket.hybrid["bootstrap"].id
+    region        = var.aws_region
+    script_sha256 = sha256(aws_s3_object.windows_bootstrap[0].content)
+  }) : local.is_windows ? templatefile("${path.module}/user_data.ps1", {
     url              = var.zip_download_url
     path             = var.win_sonar_dir
     java_url         = var.win_java_url
@@ -349,6 +387,7 @@ resource "aws_launch_template" "app" {
     jdbc_url         = local.jdbc_url
     db_password      = random_password.db_admin.result
     db_username      = var.db_username
+    agentic_setup    = ""
   }) : templatefile("${path.module}/user_data.sh", {
     url          = var.zip_download_url
     path         = var.linux_sonar_dir
@@ -356,6 +395,26 @@ resource "aws_launch_template" "app" {
     jdbc_url     = local.jdbc_url
     db_password  = random_password.db_admin.result
     db_username  = var.db_username
+    deploy_agentic_containers  = var.deploy_agentic_containers
+    agentic_generator_revision = var.agentic_generator_revision
+    mcp_image                  = var.mcp_image
+    aws_region                 = var.aws_region
+    agentic_profile = jsonencode({
+      edition        = "none"
+      db_mode        = "external"
+      db_host        = aws_db_instance.postgres.address
+      db_port        = "5432"
+      db_name        = local.rds_database_name
+      db_user        = var.db_username
+      db_password    = random_password.db_admin.result
+      storage        = "hostpath"
+      storage_path   = "${trimsuffix(var.linux_sonar_dir, "/")}/agentic-storage"
+      tls            = "off"
+      sandbox        = "runsc"
+      llm_domains    = join(",", var.agentic_llm_domains)
+      custom_ca_dir  = "./custom-ca"
+      project_name   = "sonarqube-agentic"
+    })
   }))
 
   tag_specifications {
@@ -381,16 +440,17 @@ resource "aws_autoscaling_group" "app" {
   desired_capacity          = 1
   vpc_zone_identifier       = local.private_subnet_ids
   health_check_type         = "ELB"
-  health_check_grace_period = 600
+  health_check_grace_period = local.hybrid_agentic ? 3600 : (var.deploy_agentic_containers ? 1800 : 600)
 
   target_group_arns = concat(
     [aws_lb_target_group.app.arn],
+    local.hybrid_agentic ? [aws_lb_target_group.hybrid[0].arn] : [],
     local.is_windows && var.enable_rdp ? [aws_lb_target_group.rdp[0].arn] : []
   )
 
   launch_template {
     id      = aws_launch_template.app.id
-    version = "$Latest"
+    version = tostring(aws_launch_template.app.latest_version)
   }
 
   instance_refresh {
@@ -400,7 +460,7 @@ resource "aws_autoscaling_group" "app" {
     }
   }
 
-  depends_on = [aws_db_instance.postgres]
+  depends_on = [aws_db_instance.postgres, aws_s3_object.windows_bootstrap, aws_iam_role_policy.hybrid]
 
   tag {
     key                 = "Name"
