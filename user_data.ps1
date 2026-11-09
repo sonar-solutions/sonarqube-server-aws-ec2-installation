@@ -29,7 +29,7 @@ $javaOutputFilePath = Join-Path -Path $path -ChildPath $javaFileName
 $tempExtractPath = Join-Path -Path $path -ChildPath "tmp_extract"
 
 # Determine if Chromium should be installed
-$installChromium = "${install_chromium}"
+$installChromium = [System.Convert]::ToBoolean("${install_chromium}")
 
 # Database connection URL
 $jdbcUrl = "${jdbc_url}"
@@ -65,7 +65,10 @@ try {
   $webClient.DownloadFile($javaUrl, $javaOutputFilePath)
   Write-Host "Successfully downloaded file $javaOutputFilePath."
   Write-Host "Starting Java installation"
-  Start-Process -FilePath "msiexec.exe" -ArgumentList "/i $javaOutputFilePath INSTALLLEVEL=1 /quiet" -Wait
+  $javaInstallProcess = Start-Process -FilePath "msiexec.exe" -ArgumentList "/i `"$javaOutputFilePath`" INSTALLLEVEL=1 /quiet /norestart" -Wait -PassThru
+  if ($javaInstallProcess.ExitCode -notin @(0, 3010)) {
+    throw "Java installation failed. Exit code: $($javaInstallProcess.ExitCode)"
+  }
   Write-Host "Successfully installed Java."
   
   # Wait a moment for Java installation to complete
@@ -242,6 +245,8 @@ sonar.jdbc.password=$dbPassword
     Write-Host $_.Exception.Message
 }
 
+${agentic_setup}
+
 # Install and start SonarQube
 if ($null -ne $sonarHome) {
     $serviceBatchFile = Join-Path -Path $sonarHome -ChildPath "bin\windows-x86-64\SonarService.bat"
@@ -271,8 +276,8 @@ if ($null -ne $sonarHome) {
             
             # Install the service with environment variables explicitly set
             $processInfo = New-Object System.Diagnostics.ProcessStartInfo
-            $processInfo.FileName = $serviceBatchFile
-            $processInfo.Arguments = "install"
+            $processInfo.FileName = $env:ComSpec
+            $processInfo.Arguments = '/d /s /c ""{0}" install"' -f $serviceBatchFile
             $processInfo.UseShellExecute = $false
             $processInfo.RedirectStandardOutput = $true
             $processInfo.RedirectStandardError = $true
@@ -309,8 +314,8 @@ if ($null -ne $sonarHome) {
             # Start the service
             Write-Host "Starting SonarQube service..."
             $startProcessInfo = New-Object System.Diagnostics.ProcessStartInfo
-            $startProcessInfo.FileName = $serviceBatchFile
-            $startProcessInfo.Arguments = "start"
+            $startProcessInfo.FileName = $env:ComSpec
+            $startProcessInfo.Arguments = '/d /s /c ""{0}" start"' -f $serviceBatchFile
             $startProcessInfo.UseShellExecute = $false
             $startProcessInfo.RedirectStandardOutput = $true
             $startProcessInfo.RedirectStandardError = $true

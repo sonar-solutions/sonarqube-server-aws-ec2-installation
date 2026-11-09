@@ -1,0 +1,17 @@
+<powershell>
+$ErrorActionPreference = 'Stop'
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+if (-not (Get-Command Read-S3Object -ErrorAction SilentlyContinue)) {
+    Install-PackageProvider -Name NuGet -Force | Out-Null
+    Install-Module AWS.Tools.S3 -Force -Scope AllUsers -AllowClobber
+    Import-Module AWS.Tools.S3
+}
+$directory = 'C:\ProgramData\SonarQubeBootstrap'
+New-Item $directory -ItemType Directory -Force | Out-Null
+& icacls.exe $directory /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' | Out-Null
+if ($LASTEXITCODE -ne 0) { throw 'Could not restrict bootstrap directory permissions.' }
+$script = Join-Path $directory 'bootstrap.ps1'
+Read-S3Object -BucketName '${bucket}' -Key windows.ps1 -File $script -Region '${region}' | Out-Null
+if ((Get-FileHash $script -Algorithm SHA256).Hash -ne '${script_sha256}') { throw 'Windows bootstrap checksum mismatch.' }
+& $script
+</powershell>

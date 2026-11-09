@@ -1,0 +1,126 @@
+#!/bin/bash
+set -euo pipefail
+umask 077
+export AWS_DEFAULT_REGION='${region}' AWS_PAGER=''
+dnf install -y docker git jq python3 openssl zstd wget
+command -v aws >/dev/null || dnf install -y awscli-2
+systemctl enable --now docker
+home=/opt/sonarqube-agentic
+install -d -m 700 "$home"
+cd "$home"
+composeVersion=v2.39.4
+arch=$(uname -m)
+downloadDir=$(mktemp -d)
+cd "$downloadDir"
+composeUrl="https://github.com/docker/compose/releases/download/$composeVersion"
+wget -q "$composeUrl/docker-compose-linux-$arch" "$composeUrl/docker-compose-linux-$arch.sha256"
+sha256sum -c "docker-compose-linux-$arch.sha256"
+install -d -m 755 /usr/local/lib/docker/cli-plugins
+install -m 755 "docker-compose-linux-$arch" /usr/local/lib/docker/cli-plugins/docker-compose
+gvisorUrl="https://storage.googleapis.com/gvisor/releases/release/latest/$arch"
+wget -q "$gvisorUrl/gvisor.tar.zstd" "$gvisorUrl/gvisor.tar.zstd.sha512"
+sha512sum -c gvisor.tar.zstd.sha512
+tar --zstd -xf gvisor.tar.zstd -C /usr/local/bin
+chmod -R a+rX /usr/local/bin/gvisor-bin
+chmod 755 /usr/local/bin/runsc /usr/local/bin/containerd-shim-runsc-v1
+install -d -m 755 /etc/docker
+test -f /etc/docker/daemon.json || printf '{}\n' > /etc/docker/daemon.json
+jq '.runtimes.runsc = {path: "/usr/local/bin/runsc", runtimeArgs: ["--network=host", "--overlay2=root:self,size=50g"]}' /etc/docker/daemon.json > daemon.json
+install -m 644 daemon.json /etc/docker/daemon.json
+systemctl restart docker
+git init "$home/generator"
+git -C "$home/generator" remote add origin https://github.com/SonarSource/docker-sonarqube.git
+git -C "$home/generator" fetch --depth 1 origin '${revision}'
+git -C "$home/generator" checkout --detach FETCH_HEAD
+generator="$home/generator/agentic-compose-generator"
+jq -e '[.["agent-orchestrator"], .["hunter-agent"], .["remediation-agent"], .vortex] | all(.tag | startswith("2026.5."))' "$generator/default-images.json" >/dev/null
+cat <<'EOF' > "$home/profile.json"
+${profile}
+EOF
+umask 022
+python3 "$generator/generate.py" --profile "$home/profile.json" --out "$home/bundle"
+umask 077
+rm "$home/profile.json"
+cd "$home/bundle"
+chmod 700 .
+chmod 755 egress-proxy/entrypoint.sh tls-proxy/entrypoint.sh
+chmod 644 egress-proxy/squid.conf.template tls-proxy/*.template
+chmod 755 custom-ca
+wget -q -O custom-ca/rds-ca.pem 'https://truststore.pki.rds.amazonaws.com/${region}/${region}-bundle.pem'
+chmod 644 custom-ca/*.pem custom-ca/*.crt
+identity="$home/identity.json"
+if aws s3api get-object --bucket '${bucket}' --key identity.json "$identity" >/dev/null 2>"$home/identity-error"; then
+    jq -er '.secret' "$identity" | base64 -d > "$home/instance-secret"
+    secret=$(tr -d '\r\n' < "$home/instance-secret")
+    sed -i "s/^AGENTIC_SIGNING_SECRET=.*/AGENTIC_SIGNING_SECRET=$secret/" .env
+    jq -er '.ca' "$identity" | base64 -d > tls/ca.crt
+    cp tls/ca.crt custom-ca/agentic-bundle-ca.crt
+    jq -er '.tls_certificate' "$identity" | base64 -d > tls/agentic-proxy/tls.crt
+    jq -er '.tls_private_key' "$identity" | base64 -d > tls/agentic-proxy/tls.key
+elif grep -Eq 'NoSuchKey|\(404\)' "$home/identity-error"; then
+    sed -n 's/^AGENTIC_SIGNING_SECRET=//p' .env > "$home/instance-secret"
+else
+    echo 'Could not read the persisted agent identity; refusing to rotate signing keys.' >&2
+    exit 1
+fi
+chmod 600 tls/agentic-proxy/tls.key "$home/instance-secret"
+orchestratorImage=$(docker compose config --format json | jq -r '.services.orchestrator.image')
+proxyImage=$(docker compose config --format json | jq -r '.services["agentic-proxy"].image')
+docker run --rm --user 0:0 -v "$home:/run/agentic-signing" --entrypoint /derive-keys.sh "$orchestratorImage" --secret-file /run/agentic-signing/instance-secret --label agentic-shared=/run/agentic-signing/agentic-shared.key
+cat <<'EOF' > mcp-nginx.conf
+events {}
+http {
+    server {
+        listen 8445 ssl;
+        ssl_certificate /tls/tls.crt;
+        ssl_certificate_key /tls/tls.key;
+        location / {
+            proxy_pass http://mcp:8080;
+            proxy_http_version 1.1;
+            proxy_set_header Host $host;
+            proxy_buffering off;
+            proxy_read_timeout 3600;
+        }
+    }
+}
+EOF
+chmod 644 mcp-nginx.conf
+jq -n --arg proxy "$proxyImage" '{services:{mcp:{image:"${mcp}",restart:"unless-stopped",environment:{STORAGE_PATH:"/data",SONARQUBE_URL:"https://${sq_host}",SONARQUBE_HTTP_HOST:"0.0.0.0",SONARQUBE_HTTP_PORT:"8080",SONARQUBE_TRANSPORT:"http"},volumes:["mcp_data:/data"],networks:["control"]},"mcp-proxy":{image:$proxy,restart:"unless-stopped",entrypoint:["nginx","-g","daemon off;"],volumes:["./mcp-nginx.conf:/etc/nginx/nginx.conf:ro","./tls/agentic-proxy:/tls:ro"],ports:["8445:8445"],depends_on:["mcp"],networks:["control","edge"]}},volumes:{mcp_data:{}}}' > docker-compose.override.yaml
+docker compose config --quiet
+jq -n --rawfile secret "$home/instance-secret" --arg shared "$(base64 -w0 "$home/agentic-shared.key")" --rawfile ca tls/ca.crt --rawfile cert tls/agentic-proxy/tls.crt --rawfile key tls/agentic-proxy/tls.key '{secret:($secret|@base64),shared_key:$shared,ca:($ca|@base64),tls_certificate:($cert|@base64),tls_private_key:($key|@base64)}' > "$identity"
+aws s3api put-object --bucket '${bucket}' --key identity.json --body "$identity" --server-side-encryption AES256 >/dev/null
+jq '{secret,shared_key,ca}' "$identity" > "$home/windows-config.json"
+aws s3api put-object --bucket '${bucket}' --key windows-config.json --body "$home/windows-config.json" --server-side-encryption AES256 >/dev/null
+cat <<'EOF' > /usr/local/bin/sonarqube-agentic-ready
+#!/bin/bash
+set -euo pipefail
+status=$(curl --fail --silent --show-error --max-time 10 'https://${sq_host}/api/system/status' | jq -r '.status')
+test "$status" = UP
+EOF
+chmod 755 /usr/local/bin/sonarqube-agentic-ready
+cat <<EOF > /etc/systemd/system/sonarqube-agentic.service
+[Unit]
+Description=SonarQube agent services for the Windows application
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=$home/bundle
+ExecStartPre=/usr/local/bin/sonarqube-agentic-ready
+ExecStart=/usr/bin/docker compose up -d --wait --wait-timeout 600
+ExecStop=/usr/bin/docker compose stop
+Restart=on-failure
+RestartSec=30
+TimeoutStartSec=900
+
+[Install]
+WantedBy=multi-user.target
+EOF
+rm -rf "$downloadDir"
+systemctl daemon-reload
+systemctl enable sonarqube-agentic.service
+systemctl start --no-block sonarqube-agentic.service

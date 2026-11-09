@@ -23,6 +23,28 @@ variable "vpc_id" {
   default     = null
 }
 
+variable "ami_family" {
+  type        = string
+  description = "AMI family: auto, amazon-linux-2023, windows-2019, windows-2022, or windows-2025. auto follows installation_os."
+  default     = "auto"
+
+  validation {
+    condition = contains(var.installation_os == "windows" ? ["auto", "windows-2019", "windows-2022", "windows-2025"] : ["auto", "amazon-linux-2023"], var.ami_family)
+    error_message = "Select an AMI family matching installation_os: Windows Server 2019/2022/2025 or Amazon Linux 2023."
+  }
+}
+
+variable "ami_id" {
+  type        = string
+  description = "Optional Amazon-owned x86_64 AMI ID within ami_family; empty selects the latest matching image."
+  default     = ""
+
+  validation {
+    condition     = var.ami_id == "" || can(regex("^ami-([0-9a-f]{8}|[0-9a-f]{17})$", var.ami_id))
+    error_message = "ami_id must be empty or a valid AMI ID."
+  }
+}
+
 variable "vpc_name" {
   type        = string
   description = "Name tag for the VPC when one is created."
@@ -150,16 +172,21 @@ variable "win_java_filename" {
 
 variable "deploy_agentic_containers" {
   type        = bool
-  description = "Deploy the 2026.5 agentic pack and hosted MCP alongside the Linux ZIP installation."
+  description = "Deploy the 2026.5 agentic pack and hosted MCP; Windows uses a separate Linux host."
   default     = false
 
   validation {
     condition = !var.deploy_agentic_containers || (
-      var.installation_os == "linux" &&
       can(regex("(^|/)sonarqube-(enterprise|datacenter)-2026\\.5\\.[0-9]+\\.[0-9]+\\.zip([?#].*)?$", var.zip_download_url))
     )
-    error_message = "Agentic containers require installation_os=linux and a 2026.5 distribution ZIP named sonarqube-<enterprise|datacenter>-2026.5.<patch>.<build>.zip. For other server versions, set deploy_agentic_containers=false."
+    error_message = "Agentic containers require a 2026.5 distribution ZIP named sonarqube-<enterprise|datacenter>-2026.5.<patch>.<build>.zip. For other server versions, set deploy_agentic_containers=false."
   }
+}
+
+variable "agentic_instance_type" {
+  type        = string
+  description = "x86_64 EC2 instance type for the separate Amazon Linux agent host in Windows agentic deployments."
+  default     = "m6a.2xlarge"
 }
 
 variable "agentic_generator_revision" {
