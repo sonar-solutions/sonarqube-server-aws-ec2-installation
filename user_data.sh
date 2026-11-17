@@ -69,7 +69,7 @@ wget -q "$composeUrl/docker-compose-linux-$composeArch" "$composeUrl/docker-comp
 sha256sum -c "docker-compose-linux-$composeArch.sha256"
 install -m 755 "docker-compose-linux-$composeArch" /usr/local/lib/docker/cli-plugins/docker-compose
 
-gvisorRelease="20261027"  # pinned, validated release
+gvisorRelease="20261102.0"  # pinned release; upgrade deliberately after testing with the agent images
 gvisorUrl="https://storage.googleapis.com/gvisor/releases/release/$gvisorRelease/$composeArch"
 wget -q "$gvisorUrl/gvisor.tar.zstd" "$gvisorUrl/gvisor.tar.zstd.sha512"
 sha512sum -c gvisor.tar.zstd.sha512

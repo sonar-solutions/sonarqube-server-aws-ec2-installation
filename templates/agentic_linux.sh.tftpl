@@ -17,7 +17,8 @@ wget -q "$composeUrl/docker-compose-linux-$arch" "$composeUrl/docker-compose-lin
 sha256sum -c "docker-compose-linux-$arch.sha256"
 install -d -m 755 /usr/local/lib/docker/cli-plugins
 install -m 755 "docker-compose-linux-$arch" /usr/local/lib/docker/cli-plugins/docker-compose
-gvisorUrl="https://storage.googleapis.com/gvisor/releases/release/latest/$arch"
+gvisorRelease=20261102.0
+gvisorUrl="https://storage.googleapis.com/gvisor/releases/release/$gvisorRelease/$arch"
 wget -q "$gvisorUrl/gvisor.tar.zstd" "$gvisorUrl/gvisor.tar.zstd.sha512"
 sha512sum -c gvisor.tar.zstd.sha512
 tar --zstd -xf gvisor.tar.zstd -C /usr/local/bin
@@ -85,7 +86,7 @@ http {
 }
 EOF
 chmod 644 mcp-nginx.conf
-jq -n --arg proxy "$proxyImage" '{services:{mcp:{image:"${mcp}",restart:"unless-stopped",environment:{STORAGE_PATH:"/data",SONARQUBE_URL:"https://${sq_host}",SONARQUBE_HTTP_HOST:"0.0.0.0",SONARQUBE_HTTP_PORT:"8080",SONARQUBE_TRANSPORT:"http"},volumes:["mcp_data:/data"],networks:["control"]},"mcp-proxy":{image:$proxy,restart:"unless-stopped",entrypoint:["nginx","-g","daemon off;"],volumes:["./mcp-nginx.conf:/etc/nginx/nginx.conf:ro","./tls/agentic-proxy:/tls:ro"],ports:["8445:8445"],depends_on:["mcp"],networks:["control","edge"]}},volumes:{mcp_data:{}}}' > docker-compose.override.yaml
+jq -n --arg proxy "$proxyImage" '{services:{orchestrator:{restart:"unless-stopped"},"hunter-runtime":{restart:"unless-stopped"},"remediation-agent-runtime":{restart:"unless-stopped"},vortex:{restart:"unless-stopped"},"egress-proxy":{restart:"unless-stopped"},"agentic-proxy":{restart:"unless-stopped"},mcp:{image:"${mcp}",restart:"unless-stopped",environment:{STORAGE_PATH:"/data",SONARQUBE_URL:"https://${sq_host}",SONARQUBE_HTTP_HOST:"0.0.0.0",SONARQUBE_HTTP_PORT:"8080",SONARQUBE_TRANSPORT:"http"},volumes:["mcp_data:/data"],networks:["control"]},"mcp-proxy":{image:$proxy,restart:"unless-stopped",entrypoint:["nginx","-g","daemon off;"],volumes:["./mcp-nginx.conf:/etc/nginx/nginx.conf:ro","./tls/agentic-proxy:/tls:ro"],ports:["8445:8445"],depends_on:["mcp"],networks:["control","edge"]}},volumes:{mcp_data:{}}}' > docker-compose.override.yaml
 docker compose config --quiet
 jq -n --rawfile secret "$home/instance-secret" --arg shared "$(base64 -w0 "$home/agentic-shared.key")" --rawfile ca tls/ca.crt --rawfile cert tls/agentic-proxy/tls.crt --rawfile key tls/agentic-proxy/tls.key '{secret:($secret|@base64),shared_key:$shared,ca:($ca|@base64),tls_certificate:($cert|@base64),tls_private_key:($key|@base64)}' > "$identity"
 aws s3api put-object --bucket '${bucket}' --key identity.json --body "$identity" --server-side-encryption AES256 >/dev/null
