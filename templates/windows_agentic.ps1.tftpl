@@ -1,0 +1,59 @@
+$ErrorActionPreference = 'Stop'
+if (-not $sonarHome -or -not $javaHomePath) { throw 'SonarQube and Java must be installed before configuring agent services.' }
+$agenticPath = Join-Path $sonarHome 'conf\agentic'
+New-Item $agenticPath -ItemType Directory -Force | Out-Null
+& icacls.exe $agenticPath /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' | Out-Null
+if ($LASTEXITCODE -ne 0) { throw 'Could not restrict agent signing directory permissions.' }
+$configFile = Join-Path $agenticPath 'config.json'
+$ready = $false
+for ($attempt = 0; $attempt -lt 180; $attempt++) {
+    try {
+        Read-S3Object -BucketName '${bucket}' -Key windows-config.json -File $configFile -Region '${region}' -ErrorAction Stop | Out-Null
+        $ready = $true
+        break
+    } catch { Start-Sleep -Seconds 10 }
+}
+if (-not $ready) { throw 'The Linux agent host did not publish its bootstrap configuration within 30 minutes.' }
+$config = Get-Content $configFile -Raw | ConvertFrom-Json
+foreach ($entry in @(@('secret', 'instance-secret'), @('shared_key', 'agentic-shared.key'), @('ca', 'agentic-ca.pem'))) {
+    [IO.File]::WriteAllBytes((Join-Path $agenticPath $entry[1]), [Convert]::FromBase64String($config.($entry[0])))
+}
+Remove-Item $configFile
+$truststore = Join-Path $agenticPath 'truststore'
+Copy-Item (Join-Path $javaHomePath 'lib\security\cacerts') $truststore
+$keytool = Join-Path $javaHomePath 'bin\keytool.exe'
+& $keytool -importcert -noprompt -alias agentic-ca -file (Join-Path $agenticPath 'agentic-ca.pem') -keystore $truststore -storepass changeit
+if ($LASTEXITCODE -ne 0) { throw 'Could not import the agent service CA.' }
+$rdsPem = (New-Object Net.WebClient).DownloadString('https://truststore.pki.rds.amazonaws.com/${region}/${region}-bundle.pem')
+$certificates = [regex]::Matches($rdsPem, '(?s)-----BEGIN CERTIFICATE-----.*?-----END CERTIFICATE-----')
+if ($certificates.Count -eq 0) { throw 'The RDS CA bundle contains no certificates.' }
+$certificateIndex = 0
+foreach ($certificate in $certificates) {
+    $pemFile = Join-Path $agenticPath 'rds-ca.pem'
+    Set-Content $pemFile $certificate.Value -Encoding ASCII
+    & $keytool -importcert -noprompt -alias "rds-$certificateIndex" -file $pemFile -keystore $truststore -storepass changeit
+    if ($LASTEXITCODE -ne 0) { throw 'Could not import an RDS CA certificate.' }
+    $certificateIndex++
+}
+Remove-Item $pemFile
+$propertyPath = $agenticPath.Replace('\', '/')
+$agentConfig = @"
+sonar.hunteragent.orchestrator.url=https://${host}:8443
+sonar.remediationagent.orchestrator.url=https://${host}:8443
+sonar.vortex.enabled=true
+sonar.vortex.analysis.url=https://${host}:8444
+sonar.agentic.signing.secretFile=$propertyPath/instance-secret
+sonar.agentic.orchestrator.signingKeyPath=$propertyPath/agentic-shared.key
+sonar.mcp.enabled=true
+sonar.mcp.serverUrl=https://${host}:8445
+sonar.mcp.healthCheckInterval=30
+sonar.jdbc.url=$jdbcUrl`?sslmode=verify-full&sslfactory=org.postgresql.ssl.DefaultJavaSSLFactory
+sonar.web.javaAdditionalOpts=-Djavax.net.ssl.trustStore="$propertyPath/truststore" -Djavax.net.ssl.trustStorePassword=changeit
+sonar.ce.javaAdditionalOpts=-Djavax.net.ssl.trustStore="$propertyPath/truststore" -Djavax.net.ssl.trustStorePassword=changeit
+"@
+foreach ($prefix in @('sonar.agentic.storage', 'sonar.agentic.orchestrator.storage')) {
+    $agentConfig += "`n$prefix.type=S3`n$prefix.bucket=${jobs}`n$prefix.region=${region}`n$prefix.accessKey=${access_key}`n$prefix.secretKey=${secret_key}`n$prefix.pathStyleAccess=false`n$prefix.presignTtlSeconds=21600"
+}
+Add-Content $sonarPropertiesFile ("`n" + $agentConfig) -Encoding ASCII
+& icacls.exe $sonarPropertiesFile /inheritance:r /grant:r '*S-1-5-18:F' '*S-1-5-32-544:F' | Out-Null
+if ($LASTEXITCODE -ne 0) { throw 'Could not restrict SonarQube configuration permissions.' }
