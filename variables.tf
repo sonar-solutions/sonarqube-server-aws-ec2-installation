@@ -227,6 +227,17 @@ variable "mcp_image" {
   }
 }
 
+variable "windows_root_volume_size" {
+  type        = number
+  description = "Root gp3 volume size in GiB for Windows hosts without agentic containers. The AMI default (~30 GiB) is too small for Windows Server 2025 plus SonarQube and Elasticsearch."
+  default     = 100
+
+  validation {
+    condition     = var.windows_root_volume_size >= 60 && floor(var.windows_root_volume_size) == var.windows_root_volume_size
+    error_message = "windows_root_volume_size must be a whole number of at least 60 GiB."
+  }
+}
+
 variable "agentic_root_volume_size" {
   type        = number
   description = "Root gp3 volume size in GiB when agentic containers are enabled, including sandbox writable layers."

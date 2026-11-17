@@ -361,11 +361,13 @@ resource "aws_launch_template" "app" {
   }
 
   dynamic "block_device_mappings" {
-    for_each = var.deploy_agentic_containers ? [1] : []
+    for_each = var.deploy_agentic_containers || local.is_windows ? [1] : []
     content {
       device_name = data.aws_ami.selected.root_device_name
       ebs {
-        volume_size           = var.agentic_root_volume_size
+        # Windows Server 2025 leaves too little of the default 30 GiB root volume for
+        # Elasticsearch (flood-stage disk watermark), so size it explicitly.
+        volume_size           = var.deploy_agentic_containers ? var.agentic_root_volume_size : var.windows_root_volume_size
         volume_type           = "gp3"
         encrypted             = true
         delete_on_termination = true
@@ -440,7 +442,7 @@ resource "aws_autoscaling_group" "app" {
   desired_capacity          = 1
   vpc_zone_identifier       = local.private_subnet_ids
   health_check_type         = "ELB"
-  health_check_grace_period = local.hybrid_agentic ? 3600 : (var.deploy_agentic_containers ? 1800 : 600)
+  health_check_grace_period = local.hybrid_agentic ? 3600 : (var.deploy_agentic_containers || local.is_windows ? 1800 : 600)
 
   target_group_arns = concat(
     [aws_lb_target_group.app.arn],
