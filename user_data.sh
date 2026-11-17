@@ -130,7 +130,7 @@ ORCHESTRATOR_PUBLISH_PORT=127.0.0.1:9091
 VORTEX_PUBLISH_PORT=127.0.0.1:9092
 EOF
 cat <<'EOF' > docker-compose.override.yaml
-{"services":{"mcp":{"image":"${mcp_image}","restart":"unless-stopped","environment":{"STORAGE_PATH":"/data","SONARQUBE_URL":"http://host.docker.internal:9000","SONARQUBE_HTTP_HOST":"0.0.0.0","SONARQUBE_HTTP_PORT":"8080","SONARQUBE_TRANSPORT":"http"},"extra_hosts":["host.docker.internal:host-gateway"],"ports":["127.0.0.1:9093:8080"],"volumes":["mcp_data:/data"],"networks":["control"]}},"volumes":{"mcp_data":{}}}
+{"services":{"orchestrator":{"restart":"unless-stopped"},"hunter-runtime":{"restart":"unless-stopped"},"remediation-agent-runtime":{"restart":"unless-stopped"},"vortex":{"restart":"unless-stopped"},"egress-proxy":{"restart":"unless-stopped"},"mcp":{"image":"${mcp_image}","restart":"unless-stopped","environment":{"STORAGE_PATH":"/data","SONARQUBE_URL":"http://host.docker.internal:9000","SONARQUBE_HTTP_HOST":"0.0.0.0","SONARQUBE_HTTP_PORT":"8080","SONARQUBE_TRANSPORT":"http"},"extra_hosts":["host.docker.internal:host-gateway"],"ports":["127.0.0.1:9093:8080"],"volumes":["mcp_data:/data"],"networks":["control"]}},"volumes":{"mcp_data":{}}}
 EOF
 docker compose config --quiet
 orchestratorImage=$(docker compose config --format json | jq -r '.services.orchestrator.image')
